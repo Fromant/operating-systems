@@ -29,6 +29,13 @@ constexpr int kStopAttempts = 50;
 /// Pause between two checks of the previous instance, in milliseconds.
 constexpr long kStopRetryDelayMs = 100;
 
+/// Nanoseconds in a second, for converting a duration to struct timespec.
+constexpr long long kNanosecondsPerSecond = 1000000000LL;
+
+/// How long the daemon sleeps when no rule can ever become due (an empty
+/// config). A SIGHUP reload interrupts that sleep immediately.
+constexpr int kIdleHours = 1;
+
 /// Set by the signal handlers, read by the main loop.
 volatile sig_atomic_t g_reloadRequested = 0;
 volatile sig_atomic_t g_terminationRequested = 0;
@@ -60,6 +67,20 @@ std::string readLink(const std::string& path) {
         return std::string();
     }
     return std::string(buffer.data(), static_cast<std::size_t>(length));
+}
+
+/// Strips the " (deleted)" mark that the kernel appends to the target of
+/// /proc/<pid>/exe once the executable has been replaced on disk. That is
+/// exactly the state of the previous daemon after lab1daemon has been
+/// rebuilt, and it is still the same program.
+std::string normalizeExecutablePath(const std::string& path) {
+    const std::string deletedSuffix = " (deleted)";
+    if (path.size() >= deletedSuffix.size() &&
+        path.compare(path.size() - deletedSuffix.size(), deletedSuffix.size(), deletedSuffix) ==
+            0) {
+        return path.substr(0, path.size() - deletedSuffix.size());
+    }
+    return path;
 }
 
 /// Reads a whole regular file into a string. Returns false for anything that
@@ -223,8 +244,13 @@ bool Daemon::stopPreviousInstance() {
     }
 
     // The pid may have been reused by an unrelated process, so the executable
-    // behind it is compared with ours before anything is sent to it.
-    if (!executablePath_.empty() && readLink(procDir + "/exe") != executablePath_) {
+    // behind it is compared with ours before anything is sent to it. A rebuilt
+    // lab1daemon shows up as "... (deleted)" in /proc/<pid>/exe, so both sides
+    // are stripped of that mark before the comparison: the old daemon is still
+    // the same program and has to be stopped.
+    if (!executablePath_.empty() &&
+        normalizeExecutablePath(readLink(procDir + "/exe")) !=
+            normalizeExecutablePath(executablePath_)) {
         log::error("lab1: pid %ld belongs to another program, ignoring the pid file",
                    storedPid);
         return true;
@@ -378,9 +404,17 @@ void Daemon::mainLoop() {
     sigset_t unblockAll;
     sigemptyset(&unblockAll);
 
+    reschedule();
+
     while (g_terminationRequested == 0) {
+        // The sleep lasts exactly until the earliest rule becomes due, so a rule
+        // with a 30 second interval really fires every 30 seconds and the daemon
+        // does not wake up at all when every interval is longer than that.
+        const std::chrono::nanoseconds wait = timeUntilNextRun();
+
         struct timespec timeout {};
-        timeout.tv_sec = config_.tickSeconds();
+        timeout.tv_sec = static_cast<time_t>(wait.count() / kNanosecondsPerSecond);
+        timeout.tv_nsec = static_cast<long>(wait.count() % kNanosecondsPerSecond);
 
         const int ready = pselect(0, nullptr, nullptr, nullptr, &timeout, &unblockAll);
 
@@ -408,48 +442,77 @@ void Daemon::reloadConfig() {
     log::info("lab1: SIGHUP received, reloading config file %s", configPath_.c_str());
     if (!config_.load(configPath_)) {
         log::error("lab1: reload failed, the previous config stays active");
+        return;
     }
+    // The new rules may carry other intervals, so the deadlines calculated for
+    // the old ones are dropped and every rule becomes due again.
+    reschedule();
+}
+
+void Daemon::reschedule() {
+    nextRun_.assign(config_.rules().size(), Clock::time_point());
+}
+
+std::chrono::nanoseconds Daemon::timeUntilNextRun() const {
+    if (nextRun_.empty()) {
+        // No rule exists, so nothing can become due on its own; the long sleep
+        // below is interrupted at once by SIGHUP once a rule appears.
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::hours(kIdleHours));
+    }
+
+    Clock::time_point earliest = nextRun_.front();
+    for (const Clock::time_point deadline : nextRun_) {
+        if (deadline < earliest) {
+            earliest = deadline;
+        }
+    }
+
+    const Clock::time_point now = Clock::now();
+    if (earliest <= now) {
+        return std::chrono::nanoseconds::zero();
+    }
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(earliest - now);
 }
 
 void Daemon::performActions() {
     const std::vector<Rule>& rules = config_.rules();
-    if (rules.empty()) {
-        log::info("lab1: no rules configured, nothing to do");
-        return;
-    }
 
-    // Rules carry their own interval, so the loop ticks on the shortest one and
-    // each rule is processed only once its own interval has passed.
     const Clock::time_point now = Clock::now();
-    if (nextRun_.size() != rules.size()) {
-        nextRun_.assign(rules.size(), Clock::time_point());
-    }
-
     int processed = 0;
     for (std::size_t index = 0; index < rules.size(); ++index) {
         if (nextRun_[index] > now) {
             continue;
         }
         processRule(rules[index]);
-        nextRun_[index] = now + std::chrono::seconds(rules[index].intervalSeconds);
+
+        // The deadline is moved forward from the previous one and not from
+        // "now", so the rule keeps firing every its own interval instead of
+        // drifting with the wake-up moments.
+        const std::chrono::seconds interval(rules[index].intervalSeconds);
+        nextRun_[index] += interval;
+        if (nextRun_[index] <= now) {
+            // The pass was late by more than a whole period, or reschedule()
+            // has just reset the deadline; count a full period from this pass
+            // instead of catching up on the missed ones.
+            nextRun_[index] = now + interval;
+        }
         ++processed;
     }
 
-    log::info("lab1: processed %d of %zu rule(s)", processed, rules.size());
+    if (processed > 0) {
+        log::info("lab1: processed %d of %zu rule(s)", processed, rules.size());
+    }
 }
 
 void Daemon::processRule(const Rule& rule) const {
+    // The folder is already absolute and resolved, see Config::load().
     const std::string guard = joinPath(rule.folder, rule.ignoreFile);
 
     if (fileops::exists(guard)) {
         log::info("lab1: %s found in %s, the folder is left untouched",
                   rule.ignoreFile.c_str(), rule.folder.c_str());
         return;
-    }
-
-    if (fileops::isSymlink(rule.folder)) {
-        log::info("lab1: %s is a symlink, the folder it points at is cleared",
-                  rule.folder.c_str());
     }
 
     log::info("lab1: %s not found in %s, clearing the folder",

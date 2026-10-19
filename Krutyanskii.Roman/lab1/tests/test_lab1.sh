@@ -188,6 +188,103 @@ fi
 cleanup_daemon
 rm -f "$TMP_CONF"
 
+# ---------- 9. relative folder is anchored to the config file ----------
+echo "=== test_relative_folder ==="
+TMP_DIR=$(mktemp -d)
+mkdir -p "$TMP_DIR/sub"
+echo "sub dont.erase 2" > "$TMP_DIR/conf"
+echo "hello" > "$TMP_DIR/sub/file.txt"
+cleanup_daemon
+run_daemon "$TMP_DIR/conf" || fail "daemon failed to start with a relative folder"
+sleep 3
+if [[ -f "$TMP_DIR/sub/file.txt" ]]; then
+    fail "relative folder was not resolved next to the config file"
+else
+    pass "relative folder resolved against the config directory"
+fi
+cleanup_daemon
+rm -rf "$TMP_DIR"
+
+# ---------- 10. the root directory is refused ----------
+echo "=== test_root_folder_rejected ==="
+TMP_CONF=$(mktemp)
+echo "/ dont.erase" > "$TMP_CONF"
+cleanup_daemon
+if run_daemon "$TMP_CONF"; then
+    fail "daemon accepted '/' as a rule folder"
+else
+    pass "root directory refused as a rule folder"
+fi
+rm -f "$TMP_CONF"
+TMP_DIR=$(mktemp -d)
+echo "../../.. dont.erase" > "$TMP_DIR/conf"
+if run_daemon "$TMP_DIR/conf"; then
+    fail "daemon accepted a '..' folder escaping to the root"
+else
+    pass "folder escaping to the root refused"
+fi
+rm -rf "$TMP_DIR"
+
+# ---------- 11. an interval above 20 s fires on time ----------
+echo "=== test_interval_above_20 ==="
+TMP_DIR=$(mktemp -d)
+echo "$TMP_DIR/sub dont.erase 21" > "$TMP_DIR/conf"
+mkdir -p "$TMP_DIR/sub"
+touch "$TMP_DIR/sub/dont.erase"     # keep the folder safe during the first pass
+cleanup_daemon
+run_daemon "$TMP_DIR/conf" || fail "daemon failed to start with interval 21"
+sleep 1
+rm -f "$TMP_DIR/sub/dont.erase"     # the rule is due ~21 s after the start
+echo "hello" > "$TMP_DIR/sub/file.txt"
+# A 20 s wake-up grid would leave the folder untouched until the 40 s mark,
+# so the file must disappear within 25 s of the guard removal.
+CLEARED=""
+for _ in $(seq 1 50); do
+    if [[ ! -f "$TMP_DIR/sub/file.txt" ]]; then CLEARED=1; break; fi
+    sleep 0.5
+done
+if [[ -n "$CLEARED" ]]; then
+    pass "interval above 20 s honored (folder cleared in under 25 s)"
+else
+    fail "interval of 21 s was not honored within 25 s"
+fi
+cleanup_daemon
+rm -rf "$TMP_DIR"
+
+# ---------- 12. restart after the binary has been rebuilt ----------
+echo "=== test_restart_after_rebuild ==="
+TMP_DIR=$(mktemp -d)
+COPY="$TMP_DIR/lab1daemon"
+cp "$DAEMON" "$COPY"
+echo "/tmp/lab1-test-folder dont.erase 2" > "$TMP_DIR/conf"
+mkdir -p /tmp/lab1-test-folder
+cleanup_daemon
+"$COPY" "$TMP_DIR/conf" || fail "copied daemon failed to start"
+OLD_PID=""
+if [[ -f "$PIDFILE" ]]; then OLD_PID=$(cat "$PIDFILE"); fi
+if [[ -z "$OLD_PID" ]]; then
+    fail "no pid file from the first (copied) daemon"
+else
+    # Replace the binary: the new inode makes /proc/<pid>/exe of the running
+    # daemon read as "... (deleted)", exactly as after a rebuild.
+    rm -f "$COPY" && cp "$DAEMON" "$COPY"
+    "$COPY" "$TMP_DIR/conf" || fail "restart after rebuild was refused"
+    NEW_PID=""
+    if [[ -f "$PIDFILE" ]]; then NEW_PID=$(cat "$PIDFILE"); fi
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        fail "old daemon survived a restart after the binary was rebuilt"
+    else
+        pass "old daemon stopped after the binary was rebuilt"
+    fi
+    if [[ -n "$NEW_PID" ]] && kill -0 "$NEW_PID" 2>/dev/null; then
+        pass "new daemon running after the rebuild"
+    else
+        fail "new daemon not running after the rebuild"
+    fi
+fi
+cleanup_daemon
+rm -rf "$TMP_DIR"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 exit $FAIL

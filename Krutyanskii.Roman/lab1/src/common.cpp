@@ -28,9 +28,9 @@ void printUsage(const char* programName, std::FILE* stream) noexcept {
     std::fprintf(stream,
                  "Usage: %s [options] [config-file]\n"
                  "\n"
-                 "Runs the lab1 daemon in the background. Every %d seconds the daemon\n"
-                 "clears the content of every configured folder that does not contain its\n"
-                 "guard file.\n"
+                 "Runs the lab1 daemon in the background. The daemon clears the content of\n"
+                 "every configured folder whose guard file is missing from it, once every\n"
+                 "interval of that rule (every %d seconds by default).\n"
                  "\n"
                  "Options:\n"
                  "  -h, --help       print this help and exit\n"
@@ -39,7 +39,9 @@ void printUsage(const char* programName, std::FILE* stream) noexcept {
                  "Arguments:\n"
                  "  config-file      path to the configuration file, '%s' from the current\n"
                  "                   working directory by default. The absolute path is\n"
-                 "                   resolved at startup and remembered by the daemon.\n",
+                 "                   resolved at startup and remembered by the daemon.\n"
+                 "                   Relative folders inside the file are resolved against\n"
+                 "                   the directory of the file itself.\n",
                  programName, kScanIntervalSeconds, kDefaultConfigFileName);
 }
 

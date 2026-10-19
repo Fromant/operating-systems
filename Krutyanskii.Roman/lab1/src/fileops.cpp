@@ -80,11 +80,6 @@ bool exists(const std::string& path) {
     return lstat(path.c_str(), &info) == 0;
 }
 
-bool isSymlink(const std::string& path) {
-    struct stat info {};
-    return lstat(path.c_str(), &info) == 0 && S_ISLNK(info.st_mode);
-}
-
 bool isDirectory(const std::string& path) {
     struct stat info {};
     return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);

@@ -10,8 +10,15 @@ namespace lab1 {
 
 /// A single "folder ignfile [seconds]" entry taken from the configuration file.
 struct Rule {
+    /// Absolute, fully resolved path of the folder. A relative folder of the
+    /// config file is anchored to the directory of the config file at load
+    /// time, so it keeps pointing at the same place after the daemon has
+    /// changed its working directory to "/".
     std::string folder;
+
+    /// Name of the guard file looked for directly inside 'folder'.
     std::string ignoreFile;
+
     int intervalSeconds = kScanIntervalSeconds;
 };
 
@@ -26,17 +33,20 @@ struct Rule {
 ///
 /// Empty lines and lines starting with '#' are ignored. Every other line must
 /// hold two or three fields.
+///
+/// The folder of a rule is resolved to an absolute path when the file is
+/// loaded, against the directory of the configuration file itself. A rule that
+/// names a folder which does not exist, is not a directory, or would resolve to
+/// the root directory "/" makes the whole file invalid.
 class Config {
 public:
-    /// Parses the file at 'path'. On success the rules are replaced, on failure
-    /// the previously loaded rules are kept and false is returned, so that a
-    /// broken file cannot break a running daemon.
+    /// Parses the file at 'path' (an absolute path, as stored by the daemon at
+    /// startup). On success the rules are replaced, on failure the previously
+    /// loaded rules are kept and false is returned, so that a broken file
+    /// cannot break a running daemon.
     bool load(const std::string& path);
 
     const std::vector<Rule>& rules() const noexcept { return rules_; }
-
-    /// Shortest interval over all rules, used as the tick of the main loop.
-    int tickSeconds() const noexcept;
 
 private:
     std::vector<Rule> rules_;

@@ -14,7 +14,8 @@
 namespace lab1 {
 
 /// Background process performing the configured action over the configured
-/// folders once every kScanIntervalSeconds seconds.
+/// folders, each rule once every its own interval in seconds (20 seconds, the
+/// value of kScanIntervalSeconds, unless the rule overrides it).
 ///
 /// The class is a singleton: a daemon exists in exactly one instance per host,
 /// and the class itself guards against a second one being created.
@@ -41,13 +42,20 @@ private:
     void installSignalHandlers();
     void mainLoop();
     void reloadConfig();
+    void reschedule();
+    std::chrono::nanoseconds timeUntilNextRun() const;
     void performActions();
     void processRule(const Rule& rule) const;
 
     using Clock = std::chrono::steady_clock;
 
     Config config_;
+
+    /// Moment of the next pass over each rule, parallel to Config::rules().
+    /// An epoch value means "due now"; deadlines advance by the interval of the
+    /// rule, so a rule fires exactly on time instead of on a wake-up grid.
     std::vector<Clock::time_point> nextRun_;
+
     std::string configPath_;
     std::string executablePath_;
     pid_t pid_ = 0;
