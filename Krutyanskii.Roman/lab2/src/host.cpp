@@ -123,8 +123,7 @@ signals:
 protected:
     void run() override {
         emit msg("Kid connected. Enter a wolf number (or wait 3 s for a random one).");
-        for (;;) {
-            if (gameOver) break;
+        while (!isInterruptionRequested() && !gameOver) {
             rounds++;
 
             int wolf = (std::rand() % 100) + 1;
@@ -133,6 +132,7 @@ protected:
                 if (typed >= 1 && typed <= 100) wolf = typed;
             }
             wolfNum = wolf;
+            if (isInterruptionRequested()) break;
 
             char wstr[MSG] = {};
             std::snprintf(wstr, sizeof(wstr), "%d", wolfNum);
@@ -181,16 +181,15 @@ protected:
                          .arg(turn).arg(hidden).arg(caught).arg(deadTotal).arg(deadStreak));
 
             if (deadStreak >= 2) {
-                char end[MSG] = {};
-                std::snprintf(end, sizeof(end), "END");
-                channel->Write(end, sizeof(end));
-                sem_post(&sync->toKid);
                 emit msg("GAME OVER - all kids dead for 2 rounds");
                 gameOver = true;
                 break;
             }
-            msleep(1500);
+            for (int i = 0; i < 30 && !isInterruptionRequested(); ++i) msleep(50);
         }
+        char end[MSG] = "END";
+        channel->Write(end, sizeof(end));
+        sem_post(&sync->toKid);
     }
 };
 
@@ -275,12 +274,16 @@ public:
     }
 
     ~HostWindow() override {
-        if (childPid > 0) {
-            kill(childPid, SIGTERM);
-            waitpid(childPid, nullptr, 0);
-        }
+        // Finish the protocol and join the worker before releasing resources.
         if (worker) {
-            if (!worker->wait(6000)) worker->terminate();
+            worker->requestInterruption();
+            inputReady.release();
+            worker->wait();
+        }
+        if (childPid > 0) {
+            // The startup timer may not have created the worker yet.
+            if (!worker) kill(childPid, SIGTERM);
+            while (waitpid(childPid, nullptr, 0) == -1 && errno == EINTR) {}
         }
         if (sync) {
             sem_destroy(&sync->toKid);
@@ -290,6 +293,7 @@ public:
     }
 };
 
+#ifndef LAB2_HOST_NO_MAIN
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     std::srand(static_cast<unsigned>(std::time(nullptr)));
@@ -297,5 +301,6 @@ int main(int argc, char* argv[]) {
     window.show();
     return app.exec();
 }
+#endif
 
 #include "host.moc"

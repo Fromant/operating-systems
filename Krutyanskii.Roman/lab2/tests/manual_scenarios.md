@@ -23,13 +23,15 @@ kid=...` и `[LOG] Kid sent ...`. Сообщения `Timeout - kid is not respo
 bash build.sh            # нужны собранные host_*
 bash tests/run_tests.sh
 ```
-`run_tests.sh` собирает `tests/unit_tests.cpp` в `build/unit_tests_bin`, прогоняет
-unit-тесты и затем headless-проверку всех `host_<type>` (нужен дисплей; без
-`DISPLAY` интеграционная часть сама пропускается).
+`run_tests.sh` собирает unit-тесты во временном каталоге, проверяет сборку и
+запускает headless-проверку всех `host_<type>` и 18 сценариев закрытия окна.
+Используется Qt offscreen, поэтому `DISPLAY` не требуется. Временные файлы удаляются.
 
 Ожидаем unit: PASS для mmap/shm/pipe, полиморфизма, очистки `/dev/shm`,
 underflow-тайм-аута pipe, тайм-аута семафора и локального семафора через `fork`.
 Интеграционные: для каждого `host_<type>` ≥ 2 раунда и ни одного `timeout`.
+Закрытие: код возврата 0 во всех 18 случаях, дочерние процессы забраны, объект
+`/dev/shm/lab2_shm` удалён.
 
 ## Сценарий 4 — очистка /dev/shm
 ```bash

@@ -117,12 +117,8 @@ void test_conn_pipe_underflow_timeout() {
 void test_semaphore_timeout() {
     sem_t s;
     sem_init(&s, 0, 0);
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 0;
-    ts.tv_nsec += 200000000;
-    int res = sem_timedwait(&s, &ts);
-    assert(res == -1);
+    assert(!waitMs(&s, 200));
+    assert(errno == ETIMEDOUT);
     sem_destroy(&s);
     std::cout << "PASS: semaphore timeout (sem_timedwait)" << std::endl;
 }
